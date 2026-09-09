@@ -148,26 +148,58 @@
            *>         If any insert fails, PERFORM 2900-ROLLBACK-AND-ABORT.    *
            *>------------------------------------------------------------------*
 
-           *> >>> YOUR CODE HERE: BEGIN TRANSACTION <<<
+            MOVE "BEGIN TRANSACTION;" TO SQL-STATEMENT
+            CALL "cob_sqlite_exec" USING
+                BY REFERENCE DB-HANDLE
+                BY REFERENCE SQL-STATEMENT
+                BY REFERENCE SQLITE-STATUS
+            END-CALL
+            IF NOT SQL-OK
+                PERFORM 2900-ROLLBACK-AND-ABORT
+            END-IF
 
             MOVE "INSERT INTO accounts VALUES (1001, 'Alice Jenkins', 'CHECKING', 9500.00, 'ACTIVE');"
                 TO SQL-STATEMENT
             CALL "cob_sqlite_exec" USING BY REFERENCE DB-HANDLE BY REFERENCE SQL-STATEMENT BY REFERENCE SQLITE-STATUS
             END-CALL
+            IF NOT SQL-OK
+                PERFORM 2900-ROLLBACK-AND-ABORT
+            END-IF
 
             MOVE "INSERT INTO accounts VALUES (1002, 'Bob Rodriguez', 'SAVINGS', 2500.00, 'ACTIVE');"
                 TO SQL-STATEMENT
             CALL "cob_sqlite_exec" USING BY REFERENCE DB-HANDLE BY REFERENCE SQL-STATEMENT BY REFERENCE SQLITE-STATUS
             END-CALL
+            IF NOT SQL-OK
+                PERFORM 2900-ROLLBACK-AND-ABORT
+            END-IF
 
             MOVE "INSERT INTO accounts VALUES (1003, 'Acme Corp Enterprise', 'CORPORATE', 150000.00, 'ACTIVE');"
                 TO SQL-STATEMENT
             CALL "cob_sqlite_exec" USING BY REFERENCE DB-HANDLE BY REFERENCE SQL-STATEMENT BY REFERENCE SQLITE-STATUS
             END-CALL
+            IF NOT SQL-OK
+                PERFORM 2900-ROLLBACK-AND-ABORT
+            END-IF
 
-           *> >>> YOUR CODE HERE: COMMIT TRANSACTION & ERROR CHECKING <<<
+            MOVE "INSERT INTO accounts VALUES (1004, 'Zaima', 'SAVINGS', 30000.00, 'ACTIVE');"
+                TO SQL-STATEMENT
+            CALL "cob_sqlite_exec" USING BY REFERENCE DB-HANDLE BY REFERENCE SQL-STATEMENT BY REFERENCE SQLITE-STATUS
+            END-CALL
+            IF NOT SQL-OK
+                PERFORM 2900-ROLLBACK-AND-ABORT
+            END-IF
+            MOVE "COMMIT;" TO SQL-STATEMENT
+            CALL "cob_sqlite_exec" USING
+                BY REFERENCE DB-HANDLE
+                BY REFERENCE SQL-STATEMENT
+                BY REFERENCE SQLITE-STATUS
+            END-CALL
+            IF NOT SQL-OK
+                PERFORM 2900-ROLLBACK-AND-ABORT
+            END-IF
 
-            DISPLAY "[INFO] 3 master accounts seeded." END-DISPLAY
+            DISPLAY "[INFO] 4 master accounts seeded." END-DISPLAY
             DISPLAY " " END-DISPLAY.
 
         2900-ROLLBACK-AND-ABORT.
@@ -229,6 +261,11 @@
            *>------------------------------------------------------------------*
 
            *> >>> YOUR CODE HERE: PERFORM 3600-EXECUTE-SINGLE-TXN ... <<<
+            SET TXN-IDX TO 1
+            PERFORM UNTIL TXN-IDX > 5
+                PERFORM 3600-EXECUTE-SINGLE-TXN
+                SET TXN-IDX UP BY 1
+            END-PERFORM
 
             DISPLAY "[INFO] Batch transaction processing completed." END-DISPLAY
             DISPLAY " " END-DISPLAY.
@@ -258,6 +295,40 @@
            *>------------------------------------------------------------------*
 
            *> >>> YOUR CODE HERE: IMPLEMENT CREDIT/DEBIT LOGIC & SAFETY <<<
+            MOVE "N" TO WS-CALC-OVERFLOW
+
+            IF B-TYPE (TXN-IDX) = "CREDIT"
+                ADD B-AMOUNT (TXN-IDX) TO LK-BALANCE-DEC
+                    ON SIZE ERROR
+                        MOVE "Y" TO WS-CALC-OVERFLOW
+                        ADD 1 TO WS-TXN-REJECTED END-ADD
+                        DISPLAY "[ERROR] Balance overflow. Transaction rejected." END-DISPLAY
+                END-ADD
+
+                IF WS-CALC-OVERFLOW = "N"
+                    MOVE LK-BALANCE-DEC TO WS-NEW-BALANCE
+                    PERFORM 3800-COMMIT-TXN-UPDATE
+                END-IF
+            ELSE
+                IF LK-BALANCE-DEC < B-AMOUNT (TXN-IDX)
+                    MOVE B-TXN-ID (TXN-IDX) TO STR-TXN-ID
+                    DISPLAY "  [TXN " STR-TXN-ID "] Insufficient funds. Transaction rejected." END-DISPLAY
+                    ADD 1 TO WS-TXN-REJECTED END-ADD
+                ELSE
+                    SUBTRACT B-AMOUNT (TXN-IDX) FROM LK-BALANCE-DEC
+                        ON SIZE ERROR
+                            MOVE "Y" TO WS-CALC-OVERFLOW
+                            ADD 1 TO WS-TXN-REJECTED END-ADD
+                            DISPLAY "[ERROR] Balance underflow. Transaction rejected." END-DISPLAY
+                    END-SUBTRACT
+
+                    IF WS-CALC-OVERFLOW = "N"
+                        MOVE LK-BALANCE-DEC TO WS-NEW-BALANCE
+                        PERFORM 3800-COMMIT-TXN-UPDATE
+                    END-IF
+                END-IF
+            END-IF
+
 
             .
 
@@ -367,6 +438,84 @@
            *>------------------------------------------------------------------*
 
            *> >>> YOUR CODE HERE: CURSOR QUERY, LOOP & AGGREGATION <<<
+            MOVE 0 TO WS-TOTAL-ASSETS
+            MOVE 0 TO WS-ACC-COUNT
+            MOVE "SELECT account_id, holder_name, account_type, balance, status "
+                & "FROM accounts ORDER BY account_id;"
+                TO SQL-STATEMENT
+
+            CALL "cob_sqlite_prepare" USING
+                BY REFERENCE DB-HANDLE
+                BY REFERENCE SQL-STATEMENT
+                BY REFERENCE STMT-HANDLE
+                BY REFERENCE SQLITE-STATUS
+            END-CALL
+
+            IF NOT SQL-OK
+                DISPLAY "[ERROR] Could not prepare ledger cursor. Code: "
+                        SQLITE-STATUS END-DISPLAY
+            ELSE
+                CALL "cob_sqlite_step" USING
+                    BY REFERENCE STMT-HANDLE
+                    BY REFERENCE SQLITE-STATUS
+                END-CALL
+
+                PERFORM UNTIL NOT SQL-ROW
+                    CALL "cob_sqlite_get_int" USING
+                        BY REFERENCE STMT-HANDLE
+                        BY VALUE 0
+                        BY REFERENCE Q-ACC-ID
+                    END-CALL
+                    CALL "cob_sqlite_get_text" USING
+                        BY REFERENCE STMT-HANDLE
+                        BY VALUE 1
+                        BY REFERENCE Q-HOLDER-NAME
+                        BY VALUE 25
+                    END-CALL
+                    CALL "cob_sqlite_get_text" USING
+                        BY REFERENCE STMT-HANDLE
+                        BY VALUE 2
+                        BY REFERENCE Q-ACC-TYPE
+                        BY VALUE 12
+                    END-CALL
+                    CALL "cob_sqlite_get_double" USING
+                        BY REFERENCE STMT-HANDLE
+                        BY VALUE 3
+                        BY REFERENCE Q-ACC-BAL-DBL
+                    END-CALL
+                    COMPUTE Q-ACC-BAL-DEC ROUNDED = Q-ACC-BAL-DBL
+                        END-COMPUTE
+                    CALL "cob_sqlite_get_text" USING
+                        BY REFERENCE STMT-HANDLE
+                        BY VALUE 4
+                        BY REFERENCE Q-ACC-STATUS
+                        BY VALUE 10
+                    END-CALL
+
+                    ADD 1 TO WS-ACC-COUNT END-ADD
+                    ADD Q-ACC-BAL-DEC TO WS-TOTAL-ASSETS END-ADD
+                    MOVE Q-ACC-ID TO DISP-ACC-ID
+                    MOVE Q-ACC-BAL-DEC TO DISP-BALANCE
+                    DISPLAY DISP-ACC-ID " | " Q-HOLDER-NAME " | "
+                            Q-ACC-TYPE " | " DISP-BALANCE " | "
+                            Q-ACC-STATUS END-DISPLAY
+
+                    CALL "cob_sqlite_step" USING
+                        BY REFERENCE STMT-HANDLE
+                        BY REFERENCE SQLITE-STATUS
+                    END-CALL
+                END-PERFORM
+
+                CALL "cob_sqlite_finalize" USING
+                    BY REFERENCE STMT-HANDLE
+                    BY REFERENCE SQLITE-STATUS
+                END-CALL
+
+                MOVE WS-TOTAL-ASSETS TO DISP-TOTAL-ASSETS
+                DISPLAY "-------------------------------------------------------------------------------------" END-DISPLAY
+                DISPLAY "Accounts reported: " WS-ACC-COUNT END-DISPLAY
+                DISPLAY "Total bank assets:  " DISP-TOTAL-ASSETS END-DISPLAY
+            END-IF
 
             DISPLAY "-------------------------------------------------------------------------------------" END-DISPLAY
             DISPLAY " " END-DISPLAY.
